@@ -99,7 +99,7 @@ textarea{flex:1;font:inherit;padding:11px 12px;border:1px solid var(--bd);border
 </section>
 </div>
 <script>
-const CONFIG={MODEL:"gemini-2.5-flash",ENDPOINT:"https://generativelanguage.googleapis.com/v1beta/models/",USE_SEARCH:true,TEMPERATURE:0.4,KEY:"agente_mercadeo_gemini_key"};
+const CONFIG={MODEL:"gemini-3.8-flash",ENDPOINT:"https://generativelanguage.googleapis.com/v1beta/models/",USE_SEARCH:true,TEMPERATURE:0.4,KEY:"agente_mercadeo_gemini_key"};
 const SYSTEM_PROMPT=`
 # ROL
 Eres un experto en Mercadeo (marketing estratégico y digital) y Ventas (B2B y B2C), y mentor de carrera de Nicolas.
@@ -173,15 +173,18 @@ async function ask(text){
  const body={systemInstruction:{parts:[{text:SYSTEM_PROMPT}]},contents:history,generationConfig:{temperature:CONFIG.TEMPERATURE}};
  if(CONFIG.USE_SEARCH)body.tools=[{google_search:{}}];
  try{
-  const r=await fetch(CONFIG.ENDPOINT+CONFIG.MODEL+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":store.get()},body:JSON.stringify(body)});
-  const d=await r.json();
+  const call=async b=>{const r=await fetch(CONFIG.ENDPOINT+CONFIG.MODEL+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":store.get()},body:JSON.stringify(b)});return{r,d:await r.json()}};
+  let {r,d}=await call(body),searched=!!body.tools;
+  if(!r.ok&&searched&&(r.status===400||r.status===403||/search|ground|tool/i.test((d.error&&d.error.message)||""))){
+   delete body.tools;searched=false;({r,d}=await call(body));
+  }
   if(!r.ok)throw new Error(d.error&&d.error.message?d.error.message:"Error "+r.status);
   const c=d.candidates&&d.candidates[0];
   const out=((c&&c.content&&c.content.parts)||[]).map(p=>p.text||"").join("");
   if(!out)throw new Error("La respuesta llegó vacía (puede ser un bloqueo de seguridad). Reformula la pregunta.");
   history.push({role:"model",parts:[{text:out}]});
   const ch=((c.groundingMetadata&&c.groundingMetadata.groundingChunks)||[]).map(x=>x.web);
-  w.innerHTML=md(out)+(CONFIG.USE_SEARCH?sources(ch):"");
+  w.innerHTML=md(out)+(searched?sources(ch):'<div class="src warn">Tu plan o modelo no permitió la búsqueda web, así que esta respuesta NO trae fuentes. Verifica cada dato antes de usarlo.</div>');
  }catch(e){
   history.pop();w.className="msg err";
   w.innerHTML="No pude responder: "+esc(e.message)+"<br>Si dice 429, llegaste al límite gratuito: espera unos minutos. Si menciona la API key, usa «Cambiar API key».";
