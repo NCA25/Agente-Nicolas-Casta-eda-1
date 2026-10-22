@@ -25,7 +25,7 @@ button:focus-visible,textarea:focus-visible,input:focus-visible{outline:3px soli
 .main{display:flex;flex-direction:column;min-width:0;height:100%}
 #keybar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 24px;background:#FFF6DC;border-bottom:1px solid #EAD59A;font-size:.92rem}
 #keybar[hidden]{display:none}
-#keybar input{flex:1;min-width:200px;font:inherit;padding:8px 10px;border:1px solid #C9B574;border-radius:8px;background:#fff}
+#keybar label{display:flex;flex-direction:column;gap:2px;font-size:.8rem;color:#6B5A1E}#keybar label.chk{flex-direction:row;align-items:center;gap:6px;font-size:.88rem}#keybar input[type=text],#keybar input[type=password],#keybar select{font:inherit;font-size:.95rem;padding:8px 10px;border:1px solid #C9B574;border-radius:8px;background:#fff;color:var(--ink);min-width:170px}#keybar small{flex-basis:100%;color:#6B5A1E}
 #keybar a{color:var(--acc)}
 .btn{font:inherit;font-weight:700;padding:9px 16px;border:0;border-radius:8px;background:var(--acc);color:#fff;cursor:pointer}
 #feed{flex:1;overflow-y:auto;padding:28px 24px}
@@ -83,13 +83,16 @@ textarea{flex:1;font:inherit;padding:11px 12px;border:1px solid var(--bd);border
   <button id="btnHtml">Descargar como HTML</button>
   <button id="btnPdf">Guardar como PDF</button>
   <button id="btnNew">Nueva conversación</button>
-  <button id="btnKey">Cambiar API key</button>
+  <button id="btnKey">Ajustes de API</button>
 </aside>
 <section class="main">
   <div id="keybar" hidden>
-    <span>Pega tu API key de Gemini para empezar (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">créala gratis aquí</a>). Se guarda solo en este navegador.</span>
-    <input id="keyIn" type="password" placeholder="Tu API key" autocomplete="off" aria-label="API key de Gemini">
-    <button class="btn" id="keyOk" type="button">Guardar key</button>
+    <label>Proveedor <select id="prov"><option value="gemini">Google Gemini</option><option value="openrouter">OpenRouter</option></select></label>
+    <label>Modelo <input id="modelIn" type="text" autocomplete="off" spellcheck="false"></label>
+    <label>API key <input id="keyIn" type="password" autocomplete="off"></label>
+    <label class="chk"><input type="checkbox" id="srch"> <span id="srchTx"></span></label>
+    <button class="btn" id="keyOk" type="button">Guardar</button>
+    <small id="keyHelp"></small>
   </div>
   <div id="feed"><div class="col" id="log"></div></div>
   <form id="f"><div class="col">
@@ -99,7 +102,7 @@ textarea{flex:1;font:inherit;padding:11px 12px;border:1px solid var(--bd);border
 </section>
 </div>
 <script>
-const CONFIG={MODEL:"gemini-3.8-flash",ENDPOINT:"https://generativelanguage.googleapis.com/v1beta/models/",USE_SEARCH:true,TEMPERATURE:0.4,KEY:"agente_mercadeo_gemini_key"};
+const CONFIG={ENDPOINT:"https://generativelanguage.googleapis.com/v1beta/models/",OR:"https://openrouter.ai/api/v1/chat/completions",TEMPERATURE:0.4};
 const SYSTEM_PROMPT=`
 # ROL
 Eres un experto en Mercadeo (marketing estratégico y digital) y Ventas (B2B y B2C), y mentor de carrera de Nicolas.
@@ -130,7 +133,11 @@ const STARTERS={
  cmp:["Informe comparativo","Compara dos rutas de carrera con fuentes.","Hazme un informe comparativo entre trabajar en marketing digital en una agencia y en el área de marketing de una empresa, para alguien con poca experiencia. Cita fuentes."]};
 const $=id=>document.getElementById(id),log=$("log"),feed=$("feed"),input=$("input");
 let history=[],busy=false;
-const store={get:()=>{try{return localStorage.getItem(CONFIG.KEY)||""}catch(e){return""}},set:v=>{try{localStorage.setItem(CONFIG.KEY,v)}catch(e){}}};
+const SK="agente_mercadeo_ajustes";
+const DEF={provider:"gemini",keys:{},models:{gemini:"gemini-3.8-flash",openrouter:"openai/gpt-oss-20b:free"},search:{gemini:true,openrouter:false}};
+function load(){const s=JSON.parse(JSON.stringify(DEF));try{const x=JSON.parse(localStorage.getItem(SK)||"null");if(x){if(x.provider)s.provider=x.provider;Object.assign(s.keys,x.keys);Object.assign(s.models,x.models);Object.assign(s.search,x.search)}else{const o=localStorage.getItem("agente_mercadeo_gemini_key");if(o)s.keys.gemini=o}}catch(e){}return s}
+function save(){try{localStorage.setItem(SK,JSON.stringify(S))}catch(e){}}
+let S=load(),setOpen=false;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const inl=s=>s.replace(/`(.+?)`/g,"<code>$1</code>").replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/\[([^\]]+)\]\((https:\/\/[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 function md(src){
@@ -154,40 +161,62 @@ function md(src){
 function add(cls,html){const d=document.createElement("div");d.className="msg "+cls;d.innerHTML=html;log.appendChild(d);feed.scrollTop=feed.scrollHeight;return d}
 function sources(ch){
  const seen=new Set();
- const it=ch.filter(c=>c&&c.uri&&c.uri.startsWith("https://")&&!seen.has(c.uri)&&seen.add(c.uri)).map(c=>`<li><a href="${esc(c.uri)}" target="_blank" rel="noopener noreferrer">${esc(c.title||c.uri)}</a></li>`);
- return it.length?`<div class="src"><b>Fuentes consultadas</b><ol>${it.join("")}</ol></div>`:`<div class="src warn">Esta respuesta llegó sin fuentes de búsqueda. Verifica los datos antes de usarlos.</div>`;
+ const it=ch.filter(c=>c&&c.url&&c.url.startsWith("https://")&&!seen.has(c.url)&&seen.add(c.url)).map(c=>`<li><a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title||c.url)}</a></li>`);
+ return it.length?`<div class="src"><b>Fuentes consultadas</b><ol>${it.join("")}</ol></div>`:`<div class="src warn">La búsqueda no devolvió fuentes para esta respuesta. Verifica los datos antes de usarlos.</div>`;
 }
 function hello(){
  log.innerHTML=`<div class="hero"><h2>¿Qué trabajamos hoy, Nicolas?</h2><p>Cito fuentes y te digo cuándo no estoy seguro.</p><div class="starters">`+
  Object.keys(STARTERS).map(k=>`<button type="button" data-q="${k}"><b>${STARTERS[k][0]}</b><span>${STARTERS[k][1]}</span></button>`).join("")+`</div></div>`;
 }
-function checkKey(){$("keybar").hidden=!!store.get()}
+function checkKey(){$("keybar").hidden=!!S.keys[S.provider]&&!setOpen}
+function fill(){
+ const p=S.provider,or=p==="openrouter";
+ $("prov").value=p;$("modelIn").value=S.models[p];$("keyIn").value="";
+ $("keyIn").placeholder=S.keys[p]?"Key guardada (vacío = conservarla)":"Tu API key";
+ $("srch").checked=!!S.search[p];
+ $("srchTx").textContent=or?"Búsqueda web (cuesta créditos, incluso con modelos :free)":"Búsqueda web con fuentes (Google)";
+ $("keyHelp").innerHTML=or?'Crea tu key en <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>. Los modelos que terminan en :free no cobran.':'Crea tu key en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.';
+}
+const hist=()=>history.map(m=>({role:m.role==="model"?"assistant":"user",content:m.parts[0].text}));
+async function gem(search){
+ const b={systemInstruction:{parts:[{text:SYSTEM_PROMPT}]},contents:history,generationConfig:{temperature:CONFIG.TEMPERATURE}};
+ if(search)b.tools=[{google_search:{}}];
+ const r=await fetch(CONFIG.ENDPOINT+S.models.gemini+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":S.keys.gemini},body:JSON.stringify(b)});
+ const d=await r.json();
+ if(!r.ok)return{ok:false,status:r.status,msg:(d.error&&d.error.message)||"Error "+r.status};
+ const c=d.candidates&&d.candidates[0];
+ return{ok:true,out:((c&&c.content&&c.content.parts)||[]).map(p=>p.text||"").join(""),srcs:((c&&c.groundingMetadata&&c.groundingMetadata.groundingChunks)||[]).map(x=>x.web&&{url:x.web.uri,title:x.web.title})};
+}
+async function orr(search){
+ const b={model:S.models.openrouter,messages:[{role:"system",content:SYSTEM_PROMPT}].concat(hist()),temperature:CONFIG.TEMPERATURE};
+ if(search)b.tools=[{type:"openrouter:web_search"}];
+ const hd={"Content-Type":"application/json","Authorization":"Bearer "+S.keys.openrouter,"X-Title":"Mesa de mercadeo"};
+ if(/^https?:/.test(location.href))hd["HTTP-Referer"]=location.origin;
+ const r=await fetch(CONFIG.OR,{method:"POST",headers:hd,body:JSON.stringify(b)});
+ const d=await r.json();
+ if(!r.ok||d.error)return{ok:false,status:r.status,msg:(d.error&&d.error.message)||"Error "+r.status};
+ const m=(d.choices&&d.choices[0]&&d.choices[0].message)||{};
+ return{ok:true,out:typeof m.content==="string"?m.content:"",srcs:(m.annotations||[]).filter(a=>a.type==="url_citation"&&a.url_citation).map(a=>({url:a.url_citation.url,title:a.url_citation.title}))};
+}
 async function ask(text){
  if(busy)return;
- if(!store.get()){checkKey();$("keyIn").focus();return}
+ if(!S.keys[S.provider]){setOpen=true;fill();checkKey();$("keyIn").focus();return}
  busy=true;
  const h=log.querySelector(".hero");if(h)h.remove();
  add("you",esc(text).replace(/\n/g,"<br>"));
  history.push({role:"user",parts:[{text}]});
  const w=add("bot",'<span class="dots"><span></span><span></span><span></span></span>');
- const body={systemInstruction:{parts:[{text:SYSTEM_PROMPT}]},contents:history,generationConfig:{temperature:CONFIG.TEMPERATURE}};
- if(CONFIG.USE_SEARCH)body.tools=[{google_search:{}}];
  try{
-  const call=async b=>{const r=await fetch(CONFIG.ENDPOINT+CONFIG.MODEL+":generateContent",{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":store.get()},body:JSON.stringify(b)});return{r,d:await r.json()}};
-  let {r,d}=await call(body),searched=!!body.tools;
-  if(!r.ok&&searched&&(r.status===400||r.status===403||/search|ground|tool/i.test((d.error&&d.error.message)||""))){
-   delete body.tools;searched=false;({r,d}=await call(body));
-  }
-  if(!r.ok)throw new Error(d.error&&d.error.message?d.error.message:"Error "+r.status);
-  const c=d.candidates&&d.candidates[0];
-  const out=((c&&c.content&&c.content.parts)||[]).map(p=>p.text||"").join("");
-  if(!out)throw new Error("La respuesta llegó vacía (puede ser un bloqueo de seguridad). Reformula la pregunta.");
-  history.push({role:"model",parts:[{text:out}]});
-  const ch=((c.groundingMetadata&&c.groundingMetadata.groundingChunks)||[]).map(x=>x.web);
-  w.innerHTML=md(out)+(searched?sources(ch):'<div class="src warn">Tu plan o modelo no permitió la búsqueda web, así que esta respuesta NO trae fuentes. Verifica cada dato antes de usarlo.</div>');
+  const fn=S.provider==="openrouter"?orr:gem;
+  let search=!!S.search[S.provider],res=await fn(search);
+  if(!res.ok&&search&&(res.status===400||res.status===403||/search|ground|tool/i.test(res.msg))){search=false;res=await fn(false)}
+  if(!res.ok)throw new Error(res.msg);
+  if(!res.out)throw new Error("La respuesta llegó vacía (puede ser un bloqueo de seguridad o un modelo saturado). Reformula o prueba otro modelo.");
+  history.push({role:"model",parts:[{text:res.out}]});
+  w.innerHTML=md(res.out)+(search?sources(res.srcs):'<div class="src warn">Esta respuesta NO trae fuentes (búsqueda web desactivada o no disponible en este modelo). Verifica cada dato antes de usarlo.</div>');
  }catch(e){
   history.pop();w.className="msg err";
-  w.innerHTML="No pude responder: "+esc(e.message)+"<br>Si dice 429, llegaste al límite gratuito: espera unos minutos. Si menciona la API key, usa «Cambiar API key».";
+  w.innerHTML="No pude responder: "+esc(e.message)+"<br>429 = límite alcanzado, espera o cambia de proveedor. 401 o 403 = revisa la key. 402 = sin créditos. 404 = el nombre del modelo no existe. Todo se cambia en «Ajustes de API».";
  }
  busy=false;feed.scrollTop=feed.scrollHeight;
 }
@@ -195,9 +224,10 @@ function send(){const t=input.value.trim();if(!t)return;input.value="";ask(t)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-q]");if(b&&STARTERS[b.dataset.q]){input.value=STARTERS[b.dataset.q][2];input.focus()}});
 $("f").addEventListener("submit",e=>{e.preventDefault();send()});
 input.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send()}});
-$("keyOk").onclick=()=>{const v=$("keyIn").value.trim();if(v){store.set(v);$("keyIn").value="";checkKey();input.focus()}};
+$("prov").onchange=()=>{S.provider=$("prov").value;save();fill()};
+$("keyOk").onclick=()=>{const p=S.provider,m=$("modelIn").value.trim(),k=$("keyIn").value.trim();if(m)S.models[p]=m;if(k)S.keys[p]=k;S.search[p]=$("srch").checked;save();setOpen=false;checkKey();if(S.keys[p])input.focus()};
 $("keyIn").addEventListener("keydown",e=>{if(e.key==="Enter")$("keyOk").click()});
-$("btnKey").onclick=()=>{store.set("");checkKey();$("keyIn").focus()};
+$("btnKey").onclick=()=>{setOpen=true;fill();checkKey();$("modelIn").focus()};
 $("btnNew").onclick=()=>{history=[];hello()};
 $("btnPdf").onclick=()=>window.print();
 $("btnHtml").onclick=()=>{
@@ -205,7 +235,7 @@ $("btnHtml").onclick=()=>{
  const doc=`<!DOCTYPE html><html lang="es"><meta charset="UTF-8"><title>Informe</title><style>${css}.app{display:block;height:auto}aside,form,#keybar{display:none}#feed{overflow:visible}body,html{height:auto}</style><body><div class="app"><div class="main"><div id="feed">${log.outerHTML}</div></div></div></body></html>`;
  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([doc],{type:"text/html"}));a.download="informe-"+new Date().toISOString().slice(0,10)+".html";a.click();
 };
-hello();checkKey();
+hello();fill();checkKey();
 </script>
 </body>
 </html>
